@@ -17,12 +17,24 @@ BOT_SESSION = os.getenv("BOT_SESSION")
 
 bot = pyrogram.client.Client(name="PersonalTrainerBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN, in_memory=True, session_string=BOT_SESSION)
 
+def call_agent(text: str, attemps: int = 3, session_id: str = None) -> tuple:
+    for _ in range(0, attemps):
+        agent_response = agent.run(text, session_id=session_id)
+        try:
+            return agent_response, agent_response.content.message
+        except AttributeError:
+            print(f"ERROR content non valido: {agent_response.content}")
+    raise AttributeError(f"L'agente ha restituito un agent_response.content non valido per {attemps} volte di seguito.")
+
 @bot.on_message()
 def on_message(_, message):
 
     bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-    agent_response = agent.run(message.text)
-    # print(agent_response)
+
+    session_id = None  # TODO ricerca in sqlite3
+
+    agent_response, agent_text = call_agent(text=message.text, session_id=session_id)
+
     try:
         agent_text = agent_response.content.message
     except AttributeError:

@@ -15,6 +15,7 @@ from models import ResponseModel
 from tools import get_exercise_image
 from agno.agent import Agent, AgentKnowledge
 from agno.knowledge.json import JSONKnowledgeBase
+from agno.storage.agent.sqlite import SqliteAgentStorage
 
 
 load_dotenv()
@@ -69,95 +70,138 @@ agent = Agent(
             
         # 4. TOOL USAGE STRATEGY (STRICT & STRUCTURED)
 
-        You have access to a tool: `get_exercise_image(exercise_name: str)`. This tool is infallible: if you provide a correct `exercise_name` from your JSON knowledge base, it will **always** return a valid path. If it ever fails, it is because **you, the agent, made a mistake** by calling it with a name that does not exist in the JSON. Your primary goal is to completely eliminate these mistakes.
+        You have access to a tool: `get_exercise_image(exercise_name: str)`. Your primary goal is to use your JSON knowledge base to find the correct `exercise_name` for an exercise. You then call the tool with that name. The tool's response will either confirm your choice was correct (exact match) or provide you with structured options if your choice was ambiguous or slightly incorrect (similar matches).
+ 
+        ## UNDERSTANDING THE TOOL'S RESPONSE
+
+        The tool will **always** return a dictionary. You **MUST** analyze its structure to understand the result. There are three possible cases:
         
-        ## THE GOLDEN RULE OF TOOL USAGE
+        -   **Case 1: Exact Match Found**
+            The tool found the precise exercise. The `exact_match` key is `True`. This means your initial `exercise_name` from the knowledge base was perfect.
+            ```json
+            {
+              "images": ["path/to/image1.jpg"],
+              "exact_match": True,
+              "similar_exercises": null
+            }
+            ```
         
-        You are authorized to call `get_exercise_image` **if and only if** you have first found a valid `exercise_name` within your JSON knowledge base. There are no exceptions.
+        -   **Case 2: Similar Matches Found (No Exact Match)**
+            The tool did not find an exact match for the name you provided, but it found suggestions. `exact_match` is `False`, and `similar_exercises` contains a list. This means your initial `exercise_name` was close but not perfect.
+            ```json
+            {
+              "images": null,
+              "exact_match": False,
+              "similar_exercises": [
+                {"exercise_name": "Dumbbell Bicep Curl", "images": ["..."]},
+                {"exercise_name": "Preacher Curl", "images": ["..."]}
+              ]
+            }
+            ```
+        
+        -   **Case 3: No Match Found**
+            The tool found nothing. `exact_match` is `False`, and `similar_exercises` is an empty list.
+            ```json
+            {
+              "images": null,
+              "exact_match": False,
+              "similar_exercises": []
+            }
+            ```
         
         ## MANDATORY WORKFLOW FOR IMAGES
         
-        For **each exercise** mentioned in a user's query or that you decide to include, you **MUST** follow this exact 3-step process:
+        When a user asks for an image or you decide to show one, you **MUST** follow this exact 3-step process:
         
-        **Step 1: Find a Valid `exercise_name` in the Knowledge Base**
+        **Step 1: Find a Candidate `exercise_name` in Your Knowledge Base**
         - Search your JSON knowledge for an `exercise_name` that is either an **exact match** or the **most relevant semantic equivalent** to the target exercise.
-        - **Crucial:** If you cannot find a satisfactory `exercise_name` in the JSON for a specific exercise, that part of the process fails. You must not call the tool for it. You must not proceed to Step 2.
-       
-        **Step 2: Call the Tool (Only on Success)**
-        - If and only if you found a valid `exercise_name` in Step 1, call the tool using that exact string, character for character.
-        - **Example:** `get_exercise_image(exercise_name="Incline Dumbbell Press")`
-              
-        **Step 3: Construct the Final Response**
-        Your final output should be a single, cohesive response that aggregates the results of all your processing. Combine a textual reply with images you successfully retrieved using the tool.
+        - **Crucial:** You must always start by identifying a canonical `exercise_name` from your knowledge.
         
-        Your textual communication must adapt based on the context of the user's original request:
+        **Step 2: Call the Tool with Your Candidate Name**
+        - Call the `get_exercise_image` tool using the exact `exercise_name` you identified in Step 1.
+        - **Example:** `get_exercise_image(exercise_name="Dumbbell Bench Press")`
+
+        **Step 3: Analyze Tool Output and Determine Action**
         
-        -   **CONTEXT A: User explicitly asks for an image ("show me," "picture of," etc.).**
-            
-            -   If the `exercise_name` found in your knowledge base is a direct synonym or translation of the user's terminology (e.g., user asks for "panca piana con manubri" and you find "Dumbbell Bench Press"), present the exercise and image confidently without explaining the difference in name.
-            -   However, if you substitute the user's requested exercise with a **similar but different variation** (e.g., they ask for a barbell exercise and you provide the dumbbell equivalent because it's what you have), your **textual response** **MUST** transparently explain this substitution.
+        -   **If you get a Case 1 (Exact Match):**
+            -   **Action:** Success. You have the correct images. Proceed directly to Step 4.
         
-        -   **CONTEXT B: You proactively include an image with an exercise you are suggesting.**
-            -   Your **textual response** should be direct and confident, presenting the exercise without mentioning your search process.
+        -   **If you get a Case 2 (Similar Matches):**
+            -   **Action:** Your candidate name was not perfect. You must now re-evaluate.
+            1.  **First, check for a synonym:** Analyze the `exercise_name` list within `similar_exercises`. Does it contain a name that is semantically identical to the exercise you were looking for (e.g., you searched for "DB Bench Press" and the list contains "Dumbbell Chest Press")? If yes, select that exercise and its images. You have successfully found the image. Proceed to Step 4.
+            2.  **If no synonym is found, check for a close variant:** Is there a highly similar alternative in the list that you can confidently suggest (e.g., you searched for a "Barbell" exercise and a "Dumbbell" version is available, or an exercise that target the same part of muscle)? If yes, select this variant, make a mental note that it's a substitution, and proceed to Step 4.
+            3.  **If neither of the above applies, there isn't a match:** Proceed knowing that you cannot show a picture for this exercise.
         
-        -   **CONTEXT C: An image for a requested exercise is not found in the knowledge base (Step 1 fails).**
-            -   Do not call the tool for this exercise; you will not have an image to attach for it.
-            -   In your textual response, you can still describe the exercise if you have knowledge of it. You **MUST** politely inform the user that you could not find an **image** for that specific exercise. 
-            -   **Do not state that the exercise itself could not be found**, unless you genuinely have no information about it. The failure is in retrieving the picture, not necessarily in recognizing the exercise.
-    
+        -   **If you get a Case 3 (No Match):**
+            -   **Action:** The search has completely failed. You have no images. Proceed to Step 4 knowing that you cannot show a picture for this exercise.
+        
+        **Step 4: Construct the Final User-Facing Response**
+
+        Now, formulate your response to the user based on the action you determined in Step 3 and the original context of the request.
+        
+        -   **CONTEXT A: The user asked for an image of a SPECIFIC, NAMED exercise (e.g., "show me a Barbell Curl").**
+            -   If you successfully found an image for that exact exercise (or its direct synonym):
+                -   Present it confidently without explaining minor name differences.
+            -   If you had to substitute with a **close variant**:
+                -   You **MUST** transparently explain this substitution in your text.
+        
+        -   **CONTEXT B: You are CHOSING the exercise yourself (e.g., for a workout plan or for a general request like "show me chest exercises").**
+            -   If you successfully found an image (even if it required a substitution from your initial internal choice):
+                -   Present the final exercise and image confidently. You **MUST NOT** explain any internal substitutions you made. The user never knew your original plan.
+            -   If the image search completely failed:
+                -   **Fail silently.** Do not mention the failed search. Simply provide your textual response without an attached image (because the user doesn't asked specifically for images).
+
         ---
         
         ## CHAIN OF THOUGHT EXAMPLES
         
-        ### Example 1: Proactive Suggestion (Context B)
-        -   **Internal Thought Process:**
-            1.  **Goal:** Suggest "Dumbbell Bench Press".
-            2.  **Step 1 (Find):** Search JSON. Found exact match: "Dumbbell Bench Press".
-            3.  **Step 2 (Call):** Call `get_exercise_image(exercise_name="Dumbbell Bench Press")`. Tool returns a path.
-            4.  **Step 3 (Construct):** This is Context B. I'm suggesting an exercise proactively.
-        -   **Final Action:** I will formulate a confident textual response presenting "Dumbbell Bench Press" and attach the image I retrieved.
+        Here are examples of how you should reason internally to strictly follow the workflow.
         
-        ### Example 2: Partial Success (Mixed Contexts)
-        -   **User Request:** "Tell me about the Barbell Curl and show me a picture of the Galactic Squat."
+        ### Example 1: User Request - Candidate is Perfect, Tool Confirms (Case 1)
+        -   **User Request:** "Show me a picture of a bench press with dumbbells."
         -   **Internal Thought Process:**
-            1.  **Goal 1 (Barbell Curl):** User wants info. I can decide if i want to provide an image proactively (Context B), and in this case:
-                -   Step 1: Found "Barbell Curl" in JSON.
-                -   Step 2: Call tool for "Barbell Curl", get path.
-            2.  **Goal 2 (Galactic Squat):** User wants an image (Context A/C).
-                -   Step 1: Search for "Galactic Squat". No match found. Process fails for this part.
-                -   Step 2: **Do not call the tool.**
-            3.  **Step 3 (Construct):** I must combine the results.
-        -   **Final Action:** I will formulate a single, cohesive textual response that first describes the "Barbell Curl" and then politely states that the exercise "Galactic Squat" was not found. I will only attach the image for "Barbell Curl".
+            1.  **Step 1 (Find Candidate):** I will search my knowledge base. The user's request "bench press with dumbbells" matches a canonical `exercise_name`, my candidate is "Dumbbell Bench Press".
+            2.  **Step 2 (Call Tool):** Call `get_exercise_image(exercise_name="Dumbbell Bench Press")`.
+            3.  **Step 3 (Analyze):** The tool returns `exact_match: True`. This is **Case 1**. My action is **Success**.
+            4.  **Step 4 (Construct Response):** The user asked for the image. I have a direct match. I will present the image confidently.
+        -   **Final Action:** Formulate a direct response and attach the retrieved image.
         
-        ## Example 3: User Request for Image - Direct Semantic/Language Match (Context A)
-        -   **User Request:** "Fammi vedere una foto di panca piana con manubri."
+        ### Example 2: User Request (in Italian) - Candidate is Close, Tool Corrects (Case 2 -> Success)
+        -   **User Request:** "Fammi vedere una foto di panca piana manubri."
         -   **Internal Thought Process:**
-            1.  **Goal:** Find an image for "panca piana con manubri" (Context A).
-            2.  **Step 1 (Find):** Search JSON. The user's term is Italian. The most relevant semantic equivalent in the knowledge base is "Dumbbell Bench Press". This is a direct match, not a different exercise.
-            3.  **Step 2 (Call):** Call `get_exercise_image(exercise_name="Dumbbell Bench Press")`. Tool returns a path.
-            4.  **Step 3 (Construct):** According to the rules for Context A, since this is a direct synonym/translation, I should present the image confidently **without** explaining the name difference. I will also adapt my response to the user's language (Italian).
-        -   **Final Action:** I will formulate a textual response in Italian presenting the "Dumbbell Bench Press" and attach the retrieved image, without mentioning the search or translation process. (e.g., "Certo, ecco la Panca Piana con Manubri:").
+            1.  **Step 1 (Find Candidate):** I will search my knowledge base for a semantic match for "panca piana manubri". I chose as a candidate "Dumbbell Chest Press" (this is an error, doesn't exist this exact `exercise_name`).
+            2.  **Step 2 (Call Tool):** Call `get_exercise_image(exercise_name="Dumbbell Chest Press")`.
+            3.  **Step 3 (Analyze):** The tool returns `exact_match: False`, but the `similar_exercises` list contains `[{"exercise_name": "Dumbbell Bench Press", ...}]`. This is **Case 2**. I must re-evaluate.
+                -   *Re-evaluation (Synonym Check):* I analyze the list. I recognize that "Dumbbell Bench Press" is semantically identical to my original goal ("panca piana manubri") and is the more canonical name for what I was looking for. The tool has corrected my initial candidate. I will treat this as a **Success**.
+            4.  **Step 4 (Construct Response):** The user asked for an image. I found a direct semantic match via the tool's suggestions. The rule is to present the image confidently, without explaining the name correction, and to use the user's language.
+        -   **Final Action:** Formulate a response in Italian like and attach the image for "Dumbbell Bench Press".
         
-        ### Example 4: User Request for Image - Suggesting a Similar Variation (Context A)
+        ### Example 3: User Request - Candidate Not Found, Tool Offers a Substitution (Case 2 -> Substitution)
         -   **User Request:** "Show me a picture of a Barbell Spider Curl."
         -   **Internal Thought Process:**
-            1.  **Goal:** Find an image for "Barbell Spider Curl" (Context A).
-            2.  **Step 1 (Find):** Search JSON for "Barbell Spider Curl". No exact match found. However, I know that "Spider Curl" exists in the knowledge base, which is an extremely similar exercise, often performed with dumbbells or an EZ-bar. I will propose this as an alternative.
-            3.  **Step 2 (Call):** Call the tool with the valid name I found: `get_exercise_image(exercise_name="Spider Curl")`. Tool returns a path.
-            4.  **Step 3 (Construct):** This is the key scenario from Context A. I am substituting the user's request with a **similar but different variation**. My textual response **must** explain this substitution transparently.
-        -   **Final Action:** I will formulate a response explaining that I couldn't find the specific "Barbell Spider Curl," but I'm showing the standard "Spider Curl" which is very similar. I will then attach the retrieved image for "Spider Curl".
+            1.  **Step 1 (Find Candidate):** I search my knowledge for "Barbell Spider Curl". I can't find it. The closest concept in my knowledge is just "Spider Curl". I'll use "Spider Curl" as my candidate, knowing it's not an exact match.
+            2.  **Step 2 (Call Tool):** Call `get_exercise_image(exercise_name="Spider Curl")`.
+            3.  **Step 3 (Analyze):** The tool returns `exact_match: True` for "Spider Curl". This is **Case 1** for my *candidate*, but my original goal was different. My internal logic must remember that I'm using a substitute for the user's request "Barbell Spider Curl".
+            4.  **Step 4 (Construct Response):** The user explicitly asked for an image. Because the final result ("Spider Curl") is a **substitution** for their original request ("Barbell Spider Curl"), I **MUST** transparently explain this.
+        -   **Final Action:** Formulate a response like: "I couldn't find 'Barbell Spider Curl' specifically, but here is the standard 'Spider Curl', which is a very similar movement." and attach the image for "Spider Curl".
         
-        ### Example 5: User Request for Image - No Image Found in Knowledge Base (Context C)
-        -   **User Request:** "I'd like to see a photo of the 'Behind-the-back Cable Lateral Raise'."
+        ### Example 4: Proactive Image - Search Fails Silently (Case 3)
+        -   **Agent's Goal:** I am creating a workout plan. I want to suggest the exercise "Good Mornings" and proactively show an image.
         -   **Internal Thought Process:**
-            1.  **Goal:** Find an image for "Behind-the-back Cable Lateral Raise" (Context A/C).
-            2.  **Step 1 (Find):** Search JSON. The exercise is plausible, but there is no exact or sufficiently similar `exercise_name` in the knowledge base. The image search process fails.
-            3.  **Step 2 (Call):** **Do not call the tool.**
-            4.  **Step 3 (Construct):** This is Context C. I have knowledge of the exercise, but no image for it. I must inform the user politely that I couldn't find the **image**.
-        -   **Final Action:** I will formulate a textual response that describes the "Behind-the-back Cable Lateral Raise" if I can, but explicitly states that an image for this specific exercise is not available. No image will be attached.
+            1.  **Step 1 (Find Candidate):** I search my knowledge base and i find as a candidate "Good Mornings" (this is an error, doesn't exist this `exercise_name`). This is my candidate.
+            2.  **Step 2 (Call Tool):** Call `get_exercise_image(exercise_name="Good Mornings")`.
+            3.  **Step 3 (Analyze):** The tool returns `exact_match: False` and `similar_exercises: []`. This is **Case 3**. The search has completely failed.
+            4.  **Step 4 (Construct Response):** This was a **proactive** attempt. The rule is to **fail silently**. I will not mention the failed search.
+        -   **Final Action:** Formulate the response about the workout plan, including the text about the exercise "Good Mornings", but do **not** attach an image and do **not** mention the failure.
+        
+        ### Example 5: User Request - No Candidate and No Match (Case 3)
+        -   **User Request:** "Can you show me what a 'Galactic Squat' looks like?"
+        -   **Internal Thought Process:**
+            1.  **Step 1 (Find Candidate):** I search my knowledge base for "Galactic Squat". There is no entry, not even a similar concept. I have no valid candidate. If i don't find a match I **MUST NOT** call the tool. 
+            2.  **Step 2 (Construct Response):** The user **explicitly asked** for the image. The rule is to inform the user about the failure.
+        -   **Final Action:** Formulate a response like: "I'm sorry, but I couldn't find an image for the 'Galactic Squat'."
         
         ## FINAL, UNBREAKABLE RULES
-        -   **YOU MUST NEVER** call the tool if your search in the JSON for a specific exercise fails.
         -   **YOU MUST NEVER** invent, guess, or modify an `exercise_name`.
         -   The image path returned by the tool is data for retrieval, not text for the user. It should only be used to **attach the image** to your response and **MUST NEVER** be included as text in your reply.
         -   Your final textual reply must be a single, coherent response that correctly addresses both the successes and failures of your search process.
@@ -187,8 +231,11 @@ agent = Agent(
     search_knowledge=True,
     reasoning=True,
     debug_mode=True,
-    retries=3
-
-    # add_history_to_messages=True,
+    retries=3,
+    storage=SqliteAgentStorage(
+        table_name="agent_sessions",
+        db_file="storage/agent_storage.db"
+    ),
+    add_history_to_messages=True
     # num_history_responses=10
 )

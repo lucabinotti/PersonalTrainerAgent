@@ -236,6 +236,7 @@ agent = Agent(
         table_name="agent_sessions",
         db_file="storage/agent_storage.db"
     ),
-    add_history_to_messages=True
-    # num_history_responses=10
+    add_history_to_messages=True,
+    # num_history_responses=10,
+    num_history_runs=100
 )

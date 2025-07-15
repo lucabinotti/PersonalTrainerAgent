@@ -1,6 +1,7 @@
 import os
 import logging
 import pyrogram
+from agno.agent import Agent
 from dotenv import load_dotenv
 from pyrogram import idle
 from pyrogram.enums import ParseMode, ChatAction
@@ -8,7 +9,7 @@ from pyrogram.errors import MediaCaptionTooLong
 from pyrogram.types import InputMediaPhoto
 from db import DatabaseManager
 import time
-from agent import agent
+from agent import get_agent
 
 load_dotenv()
 API_ID = os.getenv("API_ID")
@@ -19,9 +20,9 @@ BOT_SESSION = os.getenv("BOT_SESSION")
 bot = pyrogram.client.Client(name="PersonalTrainerBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN, in_memory=True, session_string=BOT_SESSION)
 
 
-def call_agent(text: str, attemps: int = 3, session_id: str = None) -> tuple:
+def call_agent(agent: Agent, text: str, user_id: str, attemps: int = 3) -> tuple:
     for _ in range(0, attemps):
-        agent_response = agent.run(text, session_id=session_id)
+        agent_response = agent.run(text, user_id=str(user_id))
         try:
             return agent_response, agent_response.content.message
         except AttributeError:
@@ -53,6 +54,13 @@ def send_images(user_id: int | str, image_paths: list) -> None:
             time.sleep(.2)
 
 
+def send_message(user_id: int | str, message: str) -> None:
+    messages_number = (len(message) // 4000) + (1 if len(message) % 4000 != 0 else 0)
+    for i in range(0, messages_number):
+        bot.send_message(chat_id=user_id, text=message[i*4000:i*4000 + 4000])
+        time.sleep(.1)
+
+
 @bot.on_message()
 def on_request(_, message):
     user_id = message.chat.id
@@ -63,12 +71,17 @@ def on_request(_, message):
     # Call agent passing session id if user already used the agent
     if db.user_session_exists(user_id=user_id):
         session_id = db.get_user_session(user_id=user_id)
-        agent_response, agent_text = call_agent(text=message.text, session_id=session_id)
+        print(f"[[DEBUG]] Using existing session id: {session_id}")
+        agent = get_agent(session_id=session_id)
+        agent_response, agent_text = call_agent(agent=agent, text=message.text, user_id=user_id)
 
-    # Save session id if it is a new user
+    # Save session if it is a new user
     else:
-        agent_response, agent_text = call_agent(text=message.text)
+        # No session id, creating new one
+        agent = get_agent()
+        agent_response, agent_text = call_agent(agent=agent, text=message.text, user_id=user_id)
         session_id = agent_response.session_id
+        print(f"[[DEBUG]] Creating new session id: {session_id}")
         db.add_user_session(user_id=user_id, session_id=session_id)
 
     if images := agent_response.content.images:
@@ -83,11 +96,13 @@ def on_request(_, message):
             time.sleep(.2)
 
             # Send text in a separate message
-            bot.send_message(chat_id=user_id, text=agent_text)
+            # bot.send_message(chat_id=user_id, text=agent_text)
+            send_message(user_id=user_id, message=agent_text)
 
     # If there aren't images, send only text
     else:
-        bot.send_message(chat_id=user_id, text=agent_text)
+        # bot.send_message(chat_id=user_id, text=agent_text)
+        send_message(user_id=user_id, message=agent_text)
 
 
 if __name__ == "__main__":

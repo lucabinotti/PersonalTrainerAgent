@@ -77,21 +77,3 @@ def get_exercise_image(exercise_name: str) -> dict:
     print("Similar" if similar_exercises else "Nop")
     return {"images": None, "exact_match": False, "similar_exercises": similar_exercises}
 
-
-@tool(show_result=True)
-def get_exercise_image___OLD(exercise_name: str) -> list:
-    """
-    Use this tool when there you think it is useful for the user to see pictures of
-    particulars exercises. Call this tool passing as the exercise name the proper
-    name specified in the JSON file that you can access as resource.
-    """
-
-    dir_path: Path = Path(rf"free-exercise-db/exercises/{exercise_name.replace(" ", "_")}")
-
-    if dir_path.exists():
-        print(f"Exists.")
-        return [str(file) for file in dir_path.iterdir() if file.is_file()]
-    print(f"Nop.")
-    return []
-
-

@@ -2,6 +2,10 @@ import sqlite3
 
 
 class DatabaseManager:
+    """
+    Class for managing user database.
+    It is used for mapping user_id (Telegram) with its session_id (Agno).
+    """
 
     def __init__(self, db_path: str):
         self.db_path = db_path

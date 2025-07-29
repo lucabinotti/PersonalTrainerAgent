@@ -1,22 +1,14 @@
-import json
-from pprint import pprint
 from textwrap import dedent
-
-from agno.embedder.google import GeminiEmbedder
-from agno.memory.v2 import Memory
-from agno.memory.v2.db.sqlite import SqliteMemoryDb
-from agno.utils.pprint import pprint_run_response
-from agno.vectordb.lancedb import LanceDb
-from agno.vectordb.pgvector import PgVector
+from agno.agent import Agent
 from dotenv import load_dotenv
-from agno.models.google import Gemini
-from pydantic_core.core_schema import model_field
-from pyrogram import idle
-
 from models import ResponseModel
+from agno.memory.v2 import Memory
 from tools import get_exercise_image
-from agno.agent import Agent, AgentKnowledge
+from agno.models.google import Gemini
+from agno.vectordb.lancedb import LanceDb
+from agno.embedder.google import GeminiEmbedder
 from agno.knowledge.json import JSONKnowledgeBase
+from agno.memory.v2.db.sqlite import SqliteMemoryDb
 from agno.storage.agent.sqlite import SqliteAgentStorage
 
 
@@ -31,6 +23,7 @@ knowledge = JSONKnowledgeBase(
     )
 )
 
+# Commented because it takes some time for running, but all the knowledge is already in LanceDB.
 # knowledge.load(recreate=False)
 
 memory = Memory(
@@ -44,6 +37,9 @@ storage = SqliteAgentStorage(
 )
 
 def get_agent(session_id: str = None) -> Agent:
+    """
+    Function for creating an instance of an Agent, passing a session_id.
+    """
 
     return Agent(
         name="PersonalTrainerAI",
@@ -67,6 +63,17 @@ def get_agent(session_id: str = None) -> Agent:
             # 1. CORE PERSONA
     
             You are "PersonalTrainerAI", a personal trainer that can be contacted via chat. Your personality is knowledgeable, direct, and clear. You must prioritize user safety above all else. You must adapt your communication to the user's language.
+            
+            **Formatting Style (Strict Rule):** Your use of Markdown is STRICTLY LIMITED to two specific formats:
+            1.  `**bold text**` (using double asterisks).
+            2.  `__italic text__` (using double underscores).
+            
+            -   Use **bold text** for key terms like exercise names, muscle groups, and direct safety warnings.
+            -   Use __italic text__ for secondary details like __reps__, __sets__, or __rest times__.
+            
+            **STRICT PROHIBITIONS (Things you MUST NEVER do):**
+            -   **DO NOT USE SEPARATORS / HORIZONTAL RULES:** This is a critical point. You are explicitly forbidden from using sequences of hyphens (`---`), asterisks (`***`), or underscores (`___`) to create lines or separate content. You must be aware of this syntax in order to actively avoid it, as it causes severe formatting errors.
+            -   **DO NOT USE ANY OTHER MARKDOWN:** Do not use headers (`#`), blockquotes (`>`), or any other syntax not explicitly allowed.
             
             # 2. CONVERSATIONAL MEMORY & CONTEXT (CRITICAL RULE)
     
@@ -243,6 +250,7 @@ def get_agent(session_id: str = None) -> Agent:
             -   **YOU MUST NEVER** invent, guess, or modify an `exercise_name`.
             -   The image path returned by the tool is data for retrieval, not text for the user. It should only be used to **attach the image** to your response and **MUST NEVER** be included as text in your reply.
             -   Your final textual reply must be a single, coherent response that correctly addresses both the successes and failures of your search process.
+            -   **DO NOT REFERENCE IMAGE POSITION:** When you are attaching an image, you **MUST NOT** write text that implies the image will follow (e.g., "Ecco la foto:", "Vedi l'immagine qui sotto", "Here are the images:"). You do not know where the image will appear in the final chat interface. Instead, present the information naturally.
             
             # 6. FINAL OUTPUT STRUCTURE (MANDATORY)
     

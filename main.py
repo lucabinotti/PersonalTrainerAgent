@@ -1,15 +1,14 @@
 import os
-import logging
+import time
 import pyrogram
+from pyrogram import idle
+from agent import get_agent
 from agno.agent import Agent
 from dotenv import load_dotenv
-from pyrogram import idle
-from pyrogram.enums import ParseMode, ChatAction
-from pyrogram.errors import MediaCaptionTooLong
-from pyrogram.types import InputMediaPhoto
 from db import DatabaseManager
-import time
-from agent import get_agent
+from pyrogram.types import InputMediaPhoto
+from pyrogram.enums import ParseMode, ChatAction
+
 
 load_dotenv()
 API_ID = os.getenv("API_ID")
@@ -21,6 +20,10 @@ bot = pyrogram.client.Client(name="PersonalTrainerBot", api_id=API_ID, api_hash=
 
 
 def call_agent(agent: Agent, text: str, user_id: str, attemps: int = 3) -> tuple:
+    """
+    Support function for calling the agent, in case it returns a non-valid JSON response, retries.
+    """
+
     for _ in range(0, attemps):
         agent_response = agent.run(text, user_id=str(user_id))
         try:
@@ -55,6 +58,11 @@ def send_images(user_id: int | str, image_paths: list) -> None:
 
 
 def send_message(user_id: int | str, message: str) -> None:
+    """
+    Support function for sending messages, Telegram max length for a message is 4096,
+    this function splits the message in more messages in case te length exceeds.
+    """
+
     messages_number = (len(message) // 4000) + (1 if len(message) % 4000 != 0 else 0)
     for i in range(0, messages_number):
         bot.send_message(chat_id=user_id, text=message[i*4000:i*4000 + 4000])
@@ -63,6 +71,10 @@ def send_message(user_id: int | str, message: str) -> None:
 
 @bot.on_message()
 def on_request(_, message):
+    """
+    Handler that receives all Telegram message updates.
+    """
+
     user_id = message.chat.id
 
     # Send "typing..." action to user while agent "thinks"
